@@ -4,6 +4,9 @@ Handles dense and sparse vectors for hybrid search.
 """
 
 import logging
+import time
+import json
+import uuid
 from typing import Dict, List, Optional, Union, Any
 
 import qdrant_client
@@ -31,19 +34,32 @@ logger = logging.getLogger(__name__)
 _qdrant_client = None
 
 def get_qdrant_client() -> qdrant_client.QdrantClient:
-    """Returns a singleton instance of the Qdrant client."""
+    """Returns a singleton instance of the Qdrant client with validation."""
     global _qdrant_client
     if _qdrant_client is None:
         try:
+            # Validate configuration
+            if not config.QDRANT_URL:
+                raise ValueError("QDRANT_URL is not configured")
+            
             logger.info(f"Initializing Qdrant client with URL: {config.QDRANT_URL}")
             _qdrant_client = qdrant_client.QdrantClient(
                 url=config.QDRANT_URL,
                 api_key=config.QDRANT_API_KEY,
-                timeout=20.0 # Increased timeout for potentially longer operations
+                timeout=30.0  # Increased timeout for reliability
             )
-            logger.info("Qdrant client initialized successfully.")
+            
+            # Test connection
+            try:
+                _ = _qdrant_client.get_collections()
+                logger.info("Qdrant client initialized and connection verified.")
+            except Exception as e:
+                logger.warning(f"Qdrant connection test failed: {e}")
+                # Continue anyway as collections might not exist yet
+                
         except Exception as e:
             logger.error(f"Failed to initialize Qdrant client: {e}")
+            _qdrant_client = None
             raise
     return _qdrant_client
 

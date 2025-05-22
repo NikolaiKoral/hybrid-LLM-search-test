@@ -34,11 +34,12 @@ logger = logging.getLogger(__name__)
 # This might be better in a function that's called once, e.g., in main or ingest_data
 # For now, global initialization for simplicity in this step.
 try:
-    sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/minicoil-v1", batch_size=128) # Adjust batch_size as needed
+    sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/minicoil-v1", batch_size=128)
     logger.info("SparseTextEmbedding model (Qdrant/minicoil-v1) initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize SparseTextEmbedding model: {e}", exc_info=True)
     sparse_embedding_model = None
+    # Don't continue if this is critical - consider raising here if required
 
 # XML namespaces
 NAMESPACES = {
@@ -79,12 +80,22 @@ def load_persisted_vocab_embeddings():
     global BRAND_VOCAB, PRODUCT_TYPE_VOCAB, PRICE_STATS, PRODUCT_TYPE_VOCAB_EMBEDDINGS
     if os.path.exists(VOCAB_EMBEDDINGS_FILE):
         try:
-            with open(VOCAB_EMBEDDINGS_FILE, 'r') as f:
+            with open(VOCAB_EMBEDDINGS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            
+            # Validate data structure
+            if not isinstance(data, dict):
+                raise ValueError("Invalid vocab embeddings file format")
+            
             BRAND_VOCAB = data.get("BRAND_VOCAB", [])
             PRODUCT_TYPE_VOCAB = data.get("PRODUCT_TYPE_VOCAB", [])
-            PRICE_STATS = data.get("PRICE_STATS", PRICE_STATS) # Keep default if not found
+            PRICE_STATS = data.get("PRICE_STATS", PRICE_STATS)
             PRODUCT_TYPE_VOCAB_EMBEDDINGS = data.get("PRODUCT_TYPE_VOCAB_EMBEDDINGS", {})
+            
+            # Validate loaded data
+            if not isinstance(BRAND_VOCAB, list) or not isinstance(PRODUCT_TYPE_VOCAB, list):
+                raise ValueError("Invalid vocabulary format")
+            
             logger.info(f"Loaded vocabularies and embeddings from {VOCAB_EMBEDDINGS_FILE}")
             logger.info(f"Brands: {len(BRAND_VOCAB)}, Types: {len(PRODUCT_TYPE_VOCAB)}, Type Embeddings: {len(PRODUCT_TYPE_VOCAB_EMBEDDINGS)}")
             return True
@@ -93,19 +104,31 @@ def load_persisted_vocab_embeddings():
     return False
 
 def persist_vocab_embeddings():
-    """Saves vocabularies and their embeddings to a file."""
+    """Saves vocabularies and their embeddings to a file atomically."""
     data_to_persist = {
         "BRAND_VOCAB": BRAND_VOCAB,
         "PRODUCT_TYPE_VOCAB": PRODUCT_TYPE_VOCAB,
         "PRICE_STATS": PRICE_STATS,
         "PRODUCT_TYPE_VOCAB_EMBEDDINGS": PRODUCT_TYPE_VOCAB_EMBEDDINGS
     }
+    
+    # Write to temporary file first, then rename for atomic operation
+    temp_file = f"{VOCAB_EMBEDDINGS_FILE}.tmp"
     try:
-        with open(VOCAB_EMBEDDINGS_FILE, 'w') as f:
-            json.dump(data_to_persist, f, indent=2)
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(data_to_persist, f, indent=2, ensure_ascii=False)
+        
+        # Atomic rename
+        os.replace(temp_file, VOCAB_EMBEDDINGS_FILE)
         logger.info(f"Successfully persisted vocabularies and embeddings to {VOCAB_EMBEDDINGS_FILE}")
     except Exception as e:
         logger.error(f"Error persisting vocab data: {e}")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except:
+                pass
 
 
 def build_vocabularies_and_stats(products: List[Dict[str, Any]], force_rebuild: bool = False):
@@ -199,16 +222,39 @@ def encode_price_normalized(price_val: Optional[float]) -> List[float]:
     return [max(0.0, min(1.0, normalized_price))]
 
 
-def download_xml_feed(url: str) -> Optional[str]:
+def download_xml_feed(url: str, max_retries: int = 3) -> Optional[str]:
+    """Download XML feed with retry logic and validation."""
+    from urllib.parse import urlparse
+    
+    # Validate URL
     try:
-        logger.info(f"Downloading XML feed from {url}")
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
-        logger.info(f"Successfully downloaded XML feed ({len(response.text)} bytes)")
-        return response.text
+        parsed_url = urlparse(url)
+        if parsed_url.scheme not in ['http', 'https']:
+            raise ValueError(f"Invalid URL scheme: {parsed_url.scheme}")
     except Exception as e:
-        logger.error(f"Failed to download XML feed: {e}")
+        logger.error(f"Invalid URL {url}: {e}")
         return None
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Downloading XML feed from {url} (attempt {attempt + 1}/{max_retries})")
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            
+            # Validate content type
+            content_type = response.headers.get('content-type', '').lower()
+            if 'xml' not in content_type and 'text' not in content_type:
+                logger.warning(f"Unexpected content type: {content_type}")
+            
+            logger.info(f"Successfully downloaded XML feed ({len(response.text)} bytes)")
+            return response.text
+        except Exception as e:
+            logger.warning(f"Attempt {attempt + 1} failed: {e}")
+            if attempt == max_retries - 1:
+                logger.error(f"All {max_retries} attempts failed")
+                return None
+            time.sleep(2 ** attempt)  # Exponential backoff
+    return None
 
 def parse_xml_feed(xml_content: str) -> List[Dict[str, Any]]:
     try:
@@ -238,12 +284,43 @@ def parse_xml_feed(xml_content: str) -> List[Dict[str, Any]]:
         logger.error(f"Failed to parse XML feed: {e}")
         return []
 
-def download_image(url: str) -> Optional[Image.Image]:
+def download_image(url: str, max_size_mb: int = 10) -> Optional[Image.Image]:
+    """Download and validate image with security checks."""
+    from urllib.parse import urlparse
+    
     try:
-        response = requests.get(url, timeout=30)
+        # Validate URL
+        parsed_url = urlparse(url)
+        if parsed_url.scheme not in ['http', 'https']:
+            logger.warning(f"Invalid URL scheme for image: {parsed_url.scheme}")
+            return None
+        
+        response = requests.get(url, timeout=30, stream=True)
         response.raise_for_status()
-        img = Image.open(BytesIO(response.content))
-        if img.mode == 'RGBA' or img.mode == 'LA' or (img.mode == 'P' and 'transparency' in img.info):
+        
+        # Check content length
+        content_length = response.headers.get('content-length')
+        if content_length and int(content_length) > max_size_mb * 1024 * 1024:
+            logger.warning(f"Image too large: {content_length} bytes (max: {max_size_mb}MB)")
+            return None
+        
+        # Validate content type
+        content_type = response.headers.get('content-type', '').lower()
+        if not content_type.startswith('image/'):
+            logger.warning(f"Invalid content type for image: {content_type}")
+            return None
+        
+        # Read and validate image
+        img_data = response.content
+        if len(img_data) > max_size_mb * 1024 * 1024:
+            logger.warning(f"Image data too large: {len(img_data)} bytes")
+            return None
+        
+        img = Image.open(BytesIO(img_data))
+        img.verify()  # Validate image structure
+        img = Image.open(BytesIO(img_data))  # Reopen after verify
+        
+        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
             img = img.convert('RGB')
         return img
     except Exception as e:

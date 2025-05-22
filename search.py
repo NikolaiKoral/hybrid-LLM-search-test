@@ -274,18 +274,52 @@ def parse_query_with_llm(natural_language_query: str) -> Dict[str, Any]:
     llm_response_str = generate_gemini_text(prompt)
     logger.info(f"LLM response for query parsing: {llm_response_str}")
     try:
-        json_start = llm_response_str.find('{'); json_end = llm_response_str.rfind('}') + 1
-        if json_start != -1 and json_end != -1:
-            parsed_json = json.loads(llm_response_str[json_start:json_end])
-            # Ensure primary dense text field has a fallback
-            if "search_text_for_description" not in parsed_json or not parsed_json["search_text_for_description"]:
-                parsed_json["search_text_for_description"] = natural_language_query
-                logger.info(f"LLM did not provide 'search_text_for_description', using full query: '{natural_language_query}'")
-            return parsed_json
-        raise ValueError("No JSON found in LLM response")
+        # More robust JSON extraction
+        json_start = llm_response_str.find('{')
+        if json_start == -1:
+            raise ValueError("No JSON object found in response")
+        
+        # Find matching closing brace
+        brace_count = 0
+        json_end = -1
+        for i in range(json_start, len(llm_response_str)):
+            if llm_response_str[i] == '{':
+                brace_count += 1
+            elif llm_response_str[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    json_end = i + 1
+                    break
+        
+        if json_end == -1:
+            raise ValueError("No matching closing brace found")
+        
+        json_str = llm_response_str[json_start:json_end]
+        parsed_json = json.loads(json_str)
+        
+        # Validate response structure
+        if not isinstance(parsed_json, dict):
+            raise ValueError("Parsed JSON is not a dictionary")
+        
+        # Ensure primary dense text field has a fallback
+        if "search_text_for_description" not in parsed_json or not parsed_json["search_text_for_description"]:
+            parsed_json["search_text_for_description"] = natural_language_query
+            logger.info(f"LLM did not provide 'search_text_for_description', using full query: '{natural_language_query}'")
+        
+        # Ensure required fields exist
+        if "attributes" not in parsed_json:
+            parsed_json["attributes"] = {}
+        if "weights" not in parsed_json:
+            parsed_json["weights"] = {}
+        
+        return parsed_json
     except Exception as e:
-        logger.error(f"Failed to parse LLM response: {e}. Fallback.")
-        return {"search_text": natural_language_query, "attributes": {}, "weights": {}}
+        logger.error(f"Failed to parse LLM response: {e}. Using fallback.")
+        return {
+            "search_text_for_description": natural_language_query,
+            "attributes": {},
+            "weights": {}
+        }
 
 
 def find_best_matching_product_type(llm_suggested_type: Optional[str], similarity_threshold: float = 0.7) -> Optional[str]:
@@ -483,25 +517,40 @@ def construct_holistic_query_vector(
 
 # Cache for query vectors to improve performance
 # Cache size is limited to avoid memory issues
-@functools.lru_cache(maxsize=100)
+@functools.lru_cache(maxsize=50)  # Reduced cache size for memory efficiency
 def get_cached_dense_vector(query_hash: str, parsed_query_json: str, image_path: Optional[str] = None) -> Optional[List[float]]:
-    """Cache wrapper for construct_holistic_query_vector"""
+    """Cache wrapper for construct_holistic_query_vector with size validation."""
     try:
+        # Validate input size to prevent memory issues
+        if len(parsed_query_json) > 10000:  # Reasonable limit
+            logger.warning("Query JSON too large for caching, processing directly")
+            parsed_query = json.loads(parsed_query_json)
+            return construct_holistic_query_vector(parsed_query, image_path)
+        
         parsed_query = json.loads(parsed_query_json)
+        if not isinstance(parsed_query, dict):
+            raise ValueError("Invalid parsed query format")
+            
         return construct_holistic_query_vector(parsed_query, image_path)
     except Exception as e:
         logger.error(f"Error in cached dense vector generation: {e}", exc_info=True)
         return None
 
-@functools.lru_cache(maxsize=100)
+@functools.lru_cache(maxsize=50)  # Reduced cache size for memory efficiency
 def get_cached_sparse_vector(keyword_text: str) -> Optional[Dict[str, Any]]:
-    """Cache wrapper for sparse vector generation"""
+    """Cache wrapper for sparse vector generation with validation."""
     if not keyword_text or not sparse_embedding_model_search:
         return None
+    
+    # Validate input size
+    if len(keyword_text) > 1000:  # Reasonable limit for keywords
+        logger.warning(f"Keyword text too long for caching: {len(keyword_text)} chars")
+        keyword_text = keyword_text[:1000]
     
     try:
         sparse_emb_obj_list = list(sparse_embedding_model_search.query_embed(keyword_text))
         if not sparse_emb_obj_list:
+            logger.warning(f"No sparse embeddings generated for: {keyword_text[:50]}...")
             return None
             
         sparse_emb_obj = sparse_emb_obj_list[0]

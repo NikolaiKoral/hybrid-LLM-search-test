@@ -38,24 +38,23 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize Gemini: {e}")
 
-# Default safety settings - adjust as needed
-# Using the dictionary format that's compatible with the current version
+# More restrictive safety settings for production use
 DEFAULT_SAFETY_SETTINGS = [
     {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE"
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE"
     },
     {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE"
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE"
     },
     {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE"
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE"
     },
     {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE"
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE"
     }
 ]
 
@@ -216,8 +215,17 @@ def function_calling(
                             function_name = function_call.name
                             
                             if function_name in function_executors:
-                                # Parse the arguments
-                                args = json.loads(function_call.args)
+                                # Parse the arguments safely
+                                try:
+                                    args = json.loads(function_call.args)
+                                    if not isinstance(args, dict):
+                                        raise ValueError("Function arguments must be a dictionary")
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"Invalid JSON in function arguments: {e}")
+                                    return f"Error: Invalid function arguments format"
+                                except Exception as e:
+                                    logger.error(f"Error parsing function arguments: {e}")
+                                    return f"Error: Failed to parse function arguments"
                                 
                                 # Execute the function
                                 logger.info(f"Executing function: {function_name}")

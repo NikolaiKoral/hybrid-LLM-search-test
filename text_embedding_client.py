@@ -82,22 +82,56 @@ def get_text_embedding(
         
         logger.info(f"Generating embeddings for {len(text_list)} text(s)")
         
-        # Get embeddings
-        result = []
-        for t in text_list:
-            # The new API processes one text at a time
-            embedding = client.get_embeddings([t])
-            values = embedding[0].values
-            
-            # Normalize if requested
-            if normalize:
-                norm = np.linalg.norm(values)
-                if norm > 0:
-                    values = [v / norm for v in values]
-            
-            result.append(values)
+        # Input validation
+        if isinstance(text, str):
+            if not text.strip():
+                logger.warning("Empty text provided for embedding")
+                return None
+        else:
+            if not text or not all(isinstance(t, str) and t.strip() for t in text):
+                logger.warning("Invalid text list provided for embedding")
+                return None
         
-        logger.info(f"Successfully generated embeddings with dimension: {len(result[0])}")
+        # Get embeddings with error handling
+        result = []
+        for i, t in enumerate(text_list):
+            try:
+                embedding = client.get_embeddings([t])
+                if not embedding or not embedding[0].values:
+                    logger.warning(f"No embedding generated for text {i}: {t[:50]}...")
+                    if single_input:
+                        return None
+                    result.append(None)
+                    continue
+                    
+                values = embedding[0].values
+                
+                # Normalize if requested with zero vector check
+                if normalize:
+                    norm = np.linalg.norm(values)
+                    if norm > 1e-8:  # Avoid division by very small numbers
+                        values = [v / norm for v in values]
+                    else:
+                        logger.warning(f"Zero or near-zero embedding vector at index {i}")
+                
+                result.append(values)
+            except Exception as e:
+                logger.error(f"Error generating embedding for text {i}: {e}")
+                if single_input:
+                    return None
+                result.append(None)
+        
+        # Validate results
+        if not result or (single_input and result[0] is None):
+            logger.error("No valid embeddings generated")
+            return None
+            
+        valid_results = [r for r in result if r is not None]
+        if valid_results:
+            logger.info(f"Successfully generated {len(valid_results)}/{len(result)} embeddings with dimension: {len(valid_results[0])}")
+        else:
+            logger.error("No valid embeddings in result")
+            return None
         
         # Return single embedding or list of embeddings based on input
         if single_input:
