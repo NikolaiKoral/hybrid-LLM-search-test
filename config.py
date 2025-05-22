@@ -2,6 +2,10 @@
 
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Critical Security Fix: Use environment variables for sensitive data
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")

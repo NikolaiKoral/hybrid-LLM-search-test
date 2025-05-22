@@ -1,7 +1,7 @@
 # Core Dependencies - Fixed versions for security and stability
 requests>=2.31.0,<3.0.0  # Security updates
 Pillow>=10.0.1,<11.0.0   # Security updates and memory safety
-numpy>=1.24.0,<2.0.0     # Performance and security
+numpy>=1.24.0            # Performance and security (allow 2.x for fastembed compatibility)
 fastembed>=0.2.7,<1.0.0  # Latest stable
 google-cloud-aiplatform>=1.36.0,<2.0.0  # Latest stable
 google-generativeai>=0.3.2,<1.0.0       # Latest stable

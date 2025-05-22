@@ -1,0 +1,12 @@
+# Streamlit Web Interface Requirements
+# Install with: pip install -r requirements-streamlit.txt
+
+# Web Framework
+streamlit>=1.28.0
+
+# Include all core requirements
+-r requirements.txt
+
+# Additional UI enhancements
+plotly>=5.17.0        # For interactive charts
+altair>=5.1.0         # For data visualization

@@ -206,6 +206,30 @@ def parse_query_with_llm(natural_language_query: str) -> Dict[str, Any]:
     - Include colors, materials, patterns, shapes, and styles in image modality text
     - Assign higher "image_modality_text_weight" for queries focused on appearance
 
+    HANDLING IMAGE-ONLY QUERIES:
+    - When no text query is provided (empty string), this indicates an image-only search
+    - Set "query_image_weight" to 0.9 for image-only searches to prioritize visual similarity
+    - Use low weights (0.1) for all other components since no text context is available
+    - Leave text fields empty or minimal
+
+    Example for image-only search (empty query with uploaded image):
+    {{
+        "search_text_for_description": "",
+        "search_text_for_image_modality": "",
+        "keyword_search_text": "",
+        "query_intent": "search",
+        "attributes": {{}},
+        "weights": {{
+            "description_text_weight": 0.1,
+            "image_modality_text_weight": 0.1,
+            "query_image_weight": 0.9,
+            "brand_weight": 0.1,
+            "product_type_weight": 0.1,
+            "availability_weight": 0.1,
+            "price_weight": 0.1
+        }}
+    }}
+
     Example for "cheap OFYR grill with a rustic look":
     {{
         "search_text_for_description": "OFYR grill outdoor cooking rustic",
@@ -322,7 +346,7 @@ def parse_query_with_llm(natural_language_query: str) -> Dict[str, Any]:
         }
 
 
-def find_best_matching_product_type(llm_suggested_type: Optional[str], similarity_threshold: float = 0.7) -> Optional[str]:
+def find_best_matching_product_type(llm_suggested_type: Optional[str], similarity_threshold: float = 0.6) -> Optional[str]:
     """
     Finds the best matching product type from the project's vocabulary (PRODUCT_TYPE_VOCAB)
     for a product type suggested by the LLM.
