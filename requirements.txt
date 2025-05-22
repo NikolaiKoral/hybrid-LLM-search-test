@@ -1,0 +1,12 @@
+# Core Dependencies
+requests>=2.25.0
+Pillow>=9.0.0
+numpy>=1.20.0
+fastembed>=0.2.0
+google-cloud-aiplatform>=1.20.0
+google-generativeai>=0.3.0
+qdrant-client>=1.7.0
+
+# Optional for development/testing (if not already covered)
+# pytest
+# ipython
