@@ -597,44 +597,58 @@ def search_with_llm_parsed_query(
         if attributes.get("brand") and parsed_query.get("weights", {}).get("brand_weight", 0) > 0.7:
             # Only apply brand filter for exact matches to avoid issues
             # with partial brand names or multi-brand queries
-            if " " not in attributes["brand"] and len(attributes["brand"]) > 2:
-                filter_parts.append(
+            # Ensure brand is a list, even if single value, for 'should' condition
+            brand_values = attributes["brand"]
+            if not isinstance(brand_values, list):
+                brand_values = [brand_values]
+            
+            if brand_values: # Proceed only if there are brand values
+                brand_conditions = [
                     models.FieldCondition(
                         key="brand",
-                        match=models.MatchValue(value=attributes["brand"])
-                    )
-                )
-                logger.info(f"Applied brand filter for: {attributes['brand']}")
-            else:
-                logger.info(f"Skipping brand filter for complex brand value: {attributes['brand']}")
+                        match=models.MatchValue(value=brand_val)
+                    ) for brand_val in brand_values
+                ]
+                # If there's only one brand, use it directly in 'must'
+                # If multiple brands were somehow parsed (e.g. "Nike or Adidas"), use 'should'
+                if len(brand_conditions) == 1:
+                    # Check if the single brand value is simple enough
+                    # (no spaces, length > 2, as per original commented logic)
+                    # This check was inside the original commented block, applying it here.
+                    if " " not in brand_values[0] and len(brand_values[0]) > 2:
+                        filter_parts.extend(brand_conditions)
+                        logger.info(f"Applied brand filter for: {brand_values[0]}")
+                    else:
+                        logger.info(f"Skipping brand filter for complex or short single brand value: {brand_values[0]}")
+                elif len(brand_conditions) > 1: # Should not happen with current LLM prompt but good for future
+                    filter_parts.append(models.Filter(should=brand_conditions))
+                    logger.info(f"Applied multi-brand filter for: {brand_values}")
     except Exception as e:
         logger.warning(f"Failed to apply brand filter: {e}")
     
-    # Add price range filter if specified - but make it optional
-    # since we might not have an index for price_val in Qdrant
+    # Add price range filter if specified
     try:
         if attributes.get("price_min") or attributes.get("price_max"):
-            # Check if we should apply price filter
             apply_price_filter = True
-            
-            # If price_max is very high (e.g., 15000+), don't apply filter
-            # as it might exclude too many results
-            if attributes.get("price_max") and float(attributes.get("price_max", 0)) > 10000:
+            if attributes.get("price_max") and float(attributes.get("price_max", 0)) > 10000: # Threshold from previous logic
                 apply_price_filter = False
                 logger.info(f"Skipping price filter for high price_max: {attributes.get('price_max')}")
             
             if apply_price_filter:
-                price_range = models.Range()
+                price_range_filter = {}
                 if attributes.get("price_min"):
-                    price_range.gte = float(attributes["price_min"])
+                    price_range_filter["gte"] = float(attributes["price_min"])
                 if attributes.get("price_max"):
-                    price_range.lte = float(attributes["price_max"])
-                filter_parts.append(
-                    models.FieldCondition(
-                        key="price_val",
-                        range=price_range
+                    price_range_filter["lte"] = float(attributes["price_max"])
+                
+                if price_range_filter: # Ensure there's something to filter on
+                    filter_parts.append(
+                        models.FieldCondition(
+                            key="price_val",
+                            range=models.Range(**price_range_filter)
+                        )
                     )
-                )
+                    logger.info(f"Applied price filter: {price_range_filter}")
     except Exception as e:
         logger.warning(f"Failed to apply price filter: {e}")
     

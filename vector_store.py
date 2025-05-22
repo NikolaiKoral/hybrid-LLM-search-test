@@ -101,6 +101,30 @@ def ensure_collection_exists(
             sparse_vectors_config=sparse_vectors_payload # This was already correct
         )
         logger.info(f"Collection '{collection_name}' created successfully.")
+        
+        # Create payload indexes for brand and price_val
+        try:
+            logger.info(f"Creating payload index for 'brand' in collection '{collection_name}'...")
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name="brand",
+                field_schema=models.PayloadSchemaType.KEYWORD
+            )
+            logger.info(f"Payload index for 'brand' created successfully.")
+
+            logger.info(f"Creating payload index for 'price_val' in collection '{collection_name}'...")
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name="price_val",
+                field_schema=models.PayloadSchemaType.FLOAT
+            )
+            logger.info(f"Payload index for 'price_val' created successfully.")
+            
+        except Exception as index_e:
+            logger.error(f"Failed to create payload indexes for collection '{collection_name}': {index_e}", exc_info=True)
+            # Depending on strictness, we might want to return False or raise here
+            # For now, log error and continue (collection exists, but filtering might fail)
+
         return True
     except Exception as e:
         logger.error(f"Failed to ensure collection '{collection_name}' exists: {e}", exc_info=True)
