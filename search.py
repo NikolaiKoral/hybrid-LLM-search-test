@@ -515,37 +515,84 @@ def construct_holistic_query_vector(
 
 # ... (search_with_llm_parsed_query, format_results, main remain the same)
 
-# Cache for query vectors to improve performance
+# Cache for query vectors to improve performance with enhanced security
 # Cache size is limited to avoid memory issues
-@functools.lru_cache(maxsize=50)  # Reduced cache size for memory efficiency
+@functools.lru_cache(maxsize=25)  # Further reduced cache size
 def get_cached_dense_vector(query_hash: str, parsed_query_json: str, image_path: Optional[str] = None) -> Optional[List[float]]:
-    """Cache wrapper for construct_holistic_query_vector with size validation."""
+    """Cache wrapper for construct_holistic_query_vector with enhanced validation."""
     try:
-        # Validate input size to prevent memory issues
-        if len(parsed_query_json) > 10000:  # Reasonable limit
-            logger.warning("Query JSON too large for caching, processing directly")
-            parsed_query = json.loads(parsed_query_json)
-            return construct_holistic_query_vector(parsed_query, image_path)
+        # Strict input validation to prevent cache poisoning
+        if not isinstance(query_hash, str) or len(query_hash) > 64:
+            logger.error("Invalid query hash format")
+            return None
+            
+        if not isinstance(parsed_query_json, str):
+            logger.error("Invalid query JSON type")
+            return None
+            
+        # Validate input size to prevent memory issues and DoS
+        if len(parsed_query_json) > 5000:  # Stricter limit
+            logger.warning(f"Query JSON too large for caching: {len(parsed_query_json)} chars, processing directly")
+            try:
+                parsed_query = json.loads(parsed_query_json)
+                if not isinstance(parsed_query, dict):
+                    raise ValueError("Invalid parsed query format")
+                return construct_holistic_query_vector(parsed_query, image_path)
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON in large query: {e}")
+                return None
+        
+        # Validate image path if provided
+        if image_path and (not isinstance(image_path, str) or len(image_path) > 1024):
+            logger.error("Invalid image path format")
+            return None
         
         parsed_query = json.loads(parsed_query_json)
         if not isinstance(parsed_query, dict):
             raise ValueError("Invalid parsed query format")
+        
+        # Additional validation for required fields
+        if "search_text_for_description" not in parsed_query:
+            logger.warning("Missing required field in cached query")
+            return None
             
         return construct_holistic_query_vector(parsed_query, image_path)
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in cached dense vector: {e}")
+        return None
     except Exception as e:
         logger.error(f"Error in cached dense vector generation: {e}", exc_info=True)
         return None
 
-@functools.lru_cache(maxsize=50)  # Reduced cache size for memory efficiency
+@functools.lru_cache(maxsize=25)  # Further reduced cache size
 def get_cached_sparse_vector(keyword_text: str) -> Optional[Dict[str, Any]]:
-    """Cache wrapper for sparse vector generation with validation."""
-    if not keyword_text or not sparse_embedding_model_search:
+    """Cache wrapper for sparse vector generation with enhanced validation."""
+    # Enhanced input validation
+    if not keyword_text or not isinstance(keyword_text, str):
+        return None
+        
+    if not sparse_embedding_model_search:
+        logger.warning("Sparse embedding model not available")
         return None
     
-    # Validate input size
-    if len(keyword_text) > 1000:  # Reasonable limit for keywords
-        logger.warning(f"Keyword text too long for caching: {len(keyword_text)} chars")
-        keyword_text = keyword_text[:1000]
+    # Sanitize input text
+    keyword_text = keyword_text.strip()
+    if not keyword_text:
+        return None
+    
+    # Validate input size and sanitize
+    if len(keyword_text) > 500:  # Stricter limit for keywords
+        logger.warning(f"Keyword text too long for caching: {len(keyword_text)} chars, truncating")
+        keyword_text = keyword_text[:500]
+    
+    # Basic sanitization - remove potentially problematic characters
+    import re
+    keyword_text = re.sub(r'[^\w\s\-\.,]', ' ', keyword_text)
+    keyword_text = ' '.join(keyword_text.split())  # Normalize whitespace
+    
+    if not keyword_text:
+        logger.warning("Keyword text became empty after sanitization")
+        return None
     
     try:
         sparse_emb_obj_list = list(sparse_embedding_model_search.query_embed(keyword_text))
@@ -554,9 +601,27 @@ def get_cached_sparse_vector(keyword_text: str) -> Optional[Dict[str, Any]]:
             return None
             
         sparse_emb_obj = sparse_emb_obj_list[0]
+        
+        # Validate embedding results
+        if not hasattr(sparse_emb_obj, 'indices') or not hasattr(sparse_emb_obj, 'values'):
+            logger.error("Invalid sparse embedding object structure")
+            return None
+            
+        indices = sparse_emb_obj.indices.tolist()
+        values = sparse_emb_obj.values.tolist()
+        
+        # Validate embedding dimensions
+        if len(indices) != len(values):
+            logger.error(f"Sparse embedding dimension mismatch: {len(indices)} indices vs {len(values)} values")
+            return None
+        
+        if len(indices) > 10000:  # Reasonable limit
+            logger.warning(f"Sparse embedding too large: {len(indices)} indices")
+            return None
+        
         return {
-            "indices": sparse_emb_obj.indices.tolist(),
-            "values": sparse_emb_obj.values.tolist()
+            "indices": indices,
+            "values": values
         }
     except Exception as e:
         logger.error(f"Error in cached sparse vector generation: {e}", exc_info=True)

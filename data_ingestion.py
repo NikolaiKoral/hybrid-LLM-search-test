@@ -67,12 +67,27 @@ def get_element_text(element: ET.Element, tag_name: str) -> Optional[str]:
     return elem.text.strip() if elem is not None and elem.text else None
 
 def parse_price(price_str: Optional[str]) -> Optional[float]:
-    """Parses price string (e.g., "189.95 DKK") to float."""
-    if not price_str: return None
-    match = re.search(r'[\d\.]+', price_str)
+    """Parses price string (e.g., "189.95 DKK") to float with input validation."""
+    if not price_str or not isinstance(price_str, str):
+        return None
+    
+    # Sanitize input - limit length to prevent ReDoS attacks
+    if len(price_str) > 100:
+        price_str = price_str[:100]
+    
+    # Use more restrictive regex pattern
+    match = re.search(r'^.*?(\d{1,10}(?:\.\d{1,2})?).*$', price_str.strip())
     if match:
-        try: return float(match.group(0))
-        except ValueError: return None
+        try:
+            price_val = float(match.group(1))
+            # Validate reasonable price range
+            if 0 <= price_val <= 1000000:  # Max 1M currency units
+                return price_val
+            else:
+                logger.warning(f"Price out of reasonable range: {price_val}")
+                return None
+        except (ValueError, OverflowError):
+            return None
     return None
 
 def load_persisted_vocab_embeddings():
@@ -175,29 +190,56 @@ def build_vocabularies_and_stats(products: List[Dict[str, Any]], force_rebuild: 
     logger.info(f"Found {len(BRAND_VOCAB)} unique brands.")
     logger.info(f"Found {len(PRODUCT_TYPE_VOCAB)} unique specific product types. Now generating their embeddings...")
 
-    # Generate embeddings for product type vocabulary
-    # Batching for efficiency if PRODUCT_TYPE_VOCAB is large
-    batch_size = 50 # Text embedding API might have batch limits
+    # Generate embeddings for product type vocabulary with optimized batching
+    batch_size = 20  # Smaller batch size for better reliability
+    total_batches = (len(PRODUCT_TYPE_VOCAB) + batch_size - 1) // batch_size
+    
     for i in range(0, len(PRODUCT_TYPE_VOCAB), batch_size):
+        batch_num = i // batch_size + 1
         batch_terms = PRODUCT_TYPE_VOCAB[i:i+batch_size]
-        try:
-            embeddings_list = get_dedicated_text_embedding(batch_terms) # Expects list, returns list of lists
-            if embeddings_list and len(embeddings_list) == len(batch_terms):
-                for term, emb_vector in zip(batch_terms, embeddings_list):
-                    PRODUCT_TYPE_VOCAB_EMBEDDINGS[term] = emb_vector
-            else:
-                logger.error(f"Mismatch in returned embeddings for batch {i//batch_size}. Expected {len(batch_terms)}, got {len(embeddings_list) if embeddings_list else 0}")
-                # Fallback: embed one by one for this batch
-                for term in batch_terms:
-                    emb_vector = get_dedicated_text_embedding(term) # Single term
-                    if emb_vector:
+        
+        logger.info(f"Processing embedding batch {batch_num}/{total_batches} ({len(batch_terms)} terms)")
+        
+        batch_success = False
+        max_batch_retries = 2
+        
+        for batch_retry in range(max_batch_retries):
+            try:
+                embeddings_list = get_dedicated_text_embedding(batch_terms)
+                if embeddings_list and len(embeddings_list) == len(batch_terms):
+                    for term, emb_vector in zip(batch_terms, embeddings_list):
+                        if emb_vector and len(emb_vector) > 0:  # Validate embedding
+                            PRODUCT_TYPE_VOCAB_EMBEDDINGS[term] = emb_vector
+                    batch_success = True
+                    break
+                else:
+                    logger.warning(f"Batch {batch_num} embedding mismatch on attempt {batch_retry + 1}")
+                    if batch_retry < max_batch_retries - 1:
+                        time.sleep(1)  # Brief delay before retry
+                        
+            except Exception as e:
+                logger.warning(f"Batch {batch_num} failed on attempt {batch_retry + 1}: {e}")
+                if batch_retry < max_batch_retries - 1:
+                    time.sleep(2)  # Longer delay for error recovery
+        
+        # Fallback to individual processing if batch fails
+        if not batch_success:
+            logger.info(f"Falling back to individual processing for batch {batch_num}")
+            for term in batch_terms:
+                try:
+                    emb_vector = get_dedicated_text_embedding(term)
+                    if emb_vector and len(emb_vector) > 0:
                         PRODUCT_TYPE_VOCAB_EMBEDDINGS[term] = emb_vector
-        except Exception as e:
-            logger.error(f"Error embedding product type batch: {e}. Trying one by one.")
-            for term in batch_terms: # Fallback for individual errors
-                emb_vector = get_dedicated_text_embedding(term)
-                if emb_vector: PRODUCT_TYPE_VOCAB_EMBEDDINGS[term] = emb_vector
-        logger.info(f"Embedded {len(PRODUCT_TYPE_VOCAB_EMBEDDINGS)} / {len(PRODUCT_TYPE_VOCAB)} product types...")
+                except Exception as e:
+                    logger.warning(f"Failed to embed individual term '{term}': {e}")
+        
+        # Progress logging and rate limiting
+        completed_terms = len(PRODUCT_TYPE_VOCAB_EMBEDDINGS)
+        logger.info(f"Progress: {completed_terms}/{len(PRODUCT_TYPE_VOCAB)} product types embedded")
+        
+        # Rate limiting between batches
+        if i + batch_size < len(PRODUCT_TYPE_VOCAB):
+            time.sleep(0.5)  # Prevent API rate limiting
 
 
     logger.info(f"Price stats: Min={PRICE_STATS['min']}, Max={PRICE_STATS['max']}")
@@ -223,14 +265,35 @@ def encode_price_normalized(price_val: Optional[float]) -> List[float]:
 
 
 def download_xml_feed(url: str, max_retries: int = 3) -> Optional[str]:
-    """Download XML feed with retry logic and validation."""
+    """Download XML feed with retry logic and enhanced security validation."""
     from urllib.parse import urlparse
+    
+    # Input validation
+    if not url or not isinstance(url, str):
+        logger.error("Invalid URL: must be a non-empty string")
+        return None
+    
+    if len(url) > 2048:  # Reasonable URL length limit
+        logger.error(f"URL too long: {len(url)} characters")
+        return None
     
     # Validate URL
     try:
         parsed_url = urlparse(url)
         if parsed_url.scheme not in ['http', 'https']:
             raise ValueError(f"Invalid URL scheme: {parsed_url.scheme}")
+        
+        # Block localhost and private IP ranges for security
+        hostname = parsed_url.hostname
+        if hostname:
+            hostname = hostname.lower()
+            if hostname in ['localhost', '127.0.0.1', '0.0.0.0'] or \
+               hostname.startswith('192.168.') or \
+               hostname.startswith('10.') or \
+               (hostname.startswith('172.') and hostname.split('.')[1].isdigit() and 
+                16 <= int(hostname.split('.')[1]) <= 31):
+                raise ValueError(f"Access to private/local addresses not allowed: {hostname}")
+                
     except Exception as e:
         logger.error(f"Invalid URL {url}: {e}")
         return None
@@ -238,16 +301,43 @@ def download_xml_feed(url: str, max_retries: int = 3) -> Optional[str]:
     for attempt in range(max_retries):
         try:
             logger.info(f"Downloading XML feed from {url} (attempt {attempt + 1}/{max_retries})")
-            response = requests.get(url, timeout=60)
+            
+            # Add security headers and limits
+            headers = {
+                'User-Agent': 'AI-Product-Expert-Bot/1.0',
+                'Accept': 'application/xml, text/xml, application/rss+xml'
+            }
+            
+            response = requests.get(
+                url, 
+                timeout=60, 
+                headers=headers,
+                allow_redirects=True,
+                stream=True,  # Stream to check size before downloading
+                verify=True   # Verify SSL certificates
+            )
             response.raise_for_status()
+            
+            # Check content length before downloading
+            content_length = response.headers.get('content-length')
+            if content_length and int(content_length) > 100 * 1024 * 1024:  # 100MB limit
+                logger.error(f"Content too large: {content_length} bytes (max 100MB)")
+                return None
             
             # Validate content type
             content_type = response.headers.get('content-type', '').lower()
-            if 'xml' not in content_type and 'text' not in content_type:
-                logger.warning(f"Unexpected content type: {content_type}")
+            if not any(ct in content_type for ct in ['xml', 'text', 'rss']):
+                logger.error(f"Invalid content type: {content_type}")
+                return None
             
-            logger.info(f"Successfully downloaded XML feed ({len(response.text)} bytes)")
-            return response.text
+            # Download content with size limit
+            content = response.text
+            if len(content) > 100 * 1024 * 1024:  # 100MB limit
+                logger.error(f"Downloaded content too large: {len(content)} bytes")
+                return None
+            
+            logger.info(f"Successfully downloaded XML feed ({len(content)} bytes)")
+            return content
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed: {e}")
             if attempt == max_retries - 1:
@@ -285,8 +375,17 @@ def parse_xml_feed(xml_content: str) -> List[Dict[str, Any]]:
         return []
 
 def download_image(url: str, max_size_mb: int = 10) -> Optional[Image.Image]:
-    """Download and validate image with security checks."""
+    """Download and validate image with enhanced security checks."""
     from urllib.parse import urlparse
+    
+    # Input validation
+    if not url or not isinstance(url, str):
+        logger.warning("Invalid image URL: must be a non-empty string")
+        return None
+    
+    if len(url) > 2048:
+        logger.warning(f"Image URL too long: {len(url)} characters")
+        return None
     
     try:
         # Validate URL
@@ -295,7 +394,32 @@ def download_image(url: str, max_size_mb: int = 10) -> Optional[Image.Image]:
             logger.warning(f"Invalid URL scheme for image: {parsed_url.scheme}")
             return None
         
-        response = requests.get(url, timeout=30, stream=True)
+        # Block private IP ranges
+        hostname = parsed_url.hostname
+        if hostname:
+            hostname = hostname.lower()
+            if hostname in ['localhost', '127.0.0.1', '0.0.0.0'] or \
+               hostname.startswith('192.168.') or \
+               hostname.startswith('10.') or \
+               (hostname.startswith('172.') and hostname.split('.')[1].isdigit() and 
+                16 <= int(hostname.split('.')[1]) <= 31):
+                logger.warning(f"Access to private/local addresses not allowed for images: {hostname}")
+                return None
+        
+        # Add security headers
+        headers = {
+            'User-Agent': 'AI-Product-Expert-Bot/1.0',
+            'Accept': 'image/jpeg, image/png, image/gif, image/webp'
+        }
+        
+        response = requests.get(
+            url, 
+            timeout=30, 
+            stream=True, 
+            headers=headers,
+            verify=True,
+            allow_redirects=True
+        )
         response.raise_for_status()
         
         # Check content length
@@ -304,9 +428,10 @@ def download_image(url: str, max_size_mb: int = 10) -> Optional[Image.Image]:
             logger.warning(f"Image too large: {content_length} bytes (max: {max_size_mb}MB)")
             return None
         
-        # Validate content type
+        # Validate content type more strictly
         content_type = response.headers.get('content-type', '').lower()
-        if not content_type.startswith('image/'):
+        allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+        if not any(allowed_type in content_type for allowed_type in allowed_types):
             logger.warning(f"Invalid content type for image: {content_type}")
             return None
         

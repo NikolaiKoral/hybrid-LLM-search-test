@@ -1,12 +1,23 @@
-# Core Dependencies
-requests>=2.25.0
-Pillow>=9.0.0
-numpy>=1.20.0
-fastembed>=0.2.0
-google-cloud-aiplatform>=1.20.0
-google-generativeai>=0.3.0
-qdrant-client>=1.7.0
+# Core Dependencies - Fixed versions for security and stability
+requests>=2.31.0,<3.0.0  # Security updates
+Pillow>=10.0.1,<11.0.0   # Security updates and memory safety
+numpy>=1.24.0,<2.0.0     # Performance and security
+fastembed>=0.2.7,<1.0.0  # Latest stable
+google-cloud-aiplatform>=1.36.0,<2.0.0  # Latest stable
+google-generativeai>=0.3.2,<1.0.0       # Latest stable
+qdrant-client>=1.7.3,<2.0.0             # Latest stable
 
-# Optional for development/testing (if not already covered)
-# pytest
-# ipython
+# Security and Development Dependencies
+python-dotenv>=1.0.0,<2.0.0  # Environment variable management
+cryptography>=41.0.0,<42.0.0  # Cryptographic security
+urllib3>=2.0.0,<3.0.0         # HTTP security
+
+# Development/Testing Dependencies
+pytest>=7.4.0,<8.0.0          # Testing framework
+pytest-cov>=4.1.0,<5.0.0      # Coverage reporting
+bandit>=1.7.5,<2.0.0          # Security linting
+safety>=2.3.0,<3.0.0          # Dependency vulnerability scanning
+
+# Optional Performance Dependencies
+# uvloop>=0.17.0,<1.0.0       # Event loop for better async performance
+# orjson>=3.9.0,<4.0.0        # Faster JSON processing

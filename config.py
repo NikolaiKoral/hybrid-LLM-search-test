@@ -7,7 +7,7 @@ from typing import Optional
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
-GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "its-koral-prod")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 GOOGLE_CLOUD_REGION = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
 
 # For multimodalembedding@001, the endpoint ID and region might be fixed
@@ -31,11 +31,25 @@ def validate_config():
         missing.append("QDRANT_API_KEY")
     if not GEMINI_API_KEY:
         missing.append("GEMINI_API_KEY")
+    if not GOOGLE_CLOUD_PROJECT:
+        missing.append("GOOGLE_CLOUD_PROJECT")
     if missing:
         raise ValueError(
             f"Missing required environment variables: {', '.join(missing)}\n"
             f"Please set these environment variables before running the application."
         )
+    
+    # Validate configuration values
+    if QDRANT_URL and not (QDRANT_URL.startswith('http://') or QDRANT_URL.startswith('https://')):
+        raise ValueError("QDRANT_URL must be a valid HTTP/HTTPS URL")
+    
+    # Validate vector dimensions are positive integers
+    if MULTIMODAL_EMBEDDING_DIMENSION <= 0:
+        raise ValueError("MULTIMODAL_EMBEDDING_DIMENSION must be positive")
+    if TEXT_EMBEDDING_005_DIMENSION <= 0:
+        raise ValueError("TEXT_EMBEDDING_005_DIMENSION must be positive")
+    if HOLISTIC_DENSE_VECTOR_DIM <= 0:
+        raise ValueError("HOLISTIC_DENSE_VECTOR_DIM must be positive")
 # Vector Naming for Qdrant Hybrid Search
 DEFAULT_DENSE_VECTOR_NAME = "holistic_dense" # Name for our main dense holistic vector
 SPARSE_VECTOR_NAME = "minicoil_sparse"   # Name for the MiniCOIL sparse vector

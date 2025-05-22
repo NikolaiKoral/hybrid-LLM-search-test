@@ -69,19 +69,55 @@ def get_multimodal_embeddings(
     if not image_path and not gcs_image_uri and not contextual_text:
         logger.warning("No input provided for multimodal embeddings (image or text).")
         return None, None
+    
+    # Input validation
+    if contextual_text and len(contextual_text.strip()) == 0:
+        logger.warning("Empty text provided for embedding.")
+        contextual_text = None
+    
+    if contextual_text and len(contextual_text) > 10000:
+        logger.warning(f"Text too long ({len(contextual_text)} chars), truncating to 10000 chars.")
+        contextual_text = contextual_text[:10000]
 
     image_input: Optional[Image] = None
     if image_path:
+        # Validate image path
+        if not os.path.exists(image_path):
+            logger.error(f"Image file does not exist: {image_path}")
+            return None, None
+        
+        if not os.path.isfile(image_path):
+            logger.error(f"Image path is not a file: {image_path}")
+            return None, None
+        
+        # Check file size (max 10MB)
+        try:
+            file_size = os.path.getsize(image_path)
+            if file_size > 10 * 1024 * 1024:  # 10MB
+                logger.error(f"Image file too large: {file_size} bytes (max 10MB)")
+                return None, None
+        except OSError as e:
+            logger.error(f"Cannot get file size for {image_path}: {e}")
+            return None, None
+        
         try:
             image_input = Image.load_from_file(image_path)
             logger.info(f"Loaded image from local path: {image_path}")
         except Exception as e:
             logger.error(f"Failed to load image from path {image_path}: {e}")
-            return None, None # Or handle more gracefully
+            return None, None
     elif gcs_image_uri:
-        image_input = Image(gcs_uri=gcs_image_uri) # Assuming Image can take gcs_uri directly
-                                                 # Or use Image.load_from_file if it supports GCS URIs
-        logger.info(f"Using image from GCS URI: {gcs_image_uri}")
+        # Validate GCS URI format
+        if not gcs_image_uri.startswith('gs://'):
+            logger.error(f"Invalid GCS URI format: {gcs_image_uri}")
+            return None, None
+        
+        try:
+            image_input = Image(gcs_uri=gcs_image_uri)
+            logger.info(f"Using image from GCS URI: {gcs_image_uri}")
+        except Exception as e:
+            logger.error(f"Failed to load image from GCS URI {gcs_image_uri}: {e}")
+            return None, None
 
 
     try:
@@ -124,29 +160,25 @@ if __name__ == '__main__':
     # Test 2: Image only (provide a path to a sample image)
     # Ensure 'sample_image.jpg' exists in the ai_product_expert_bot directory or provide a valid path
     sample_image_file = "sample_image.jpg" 
-    try:
-        with open(sample_image_file, "w") as f: # Create a dummy file if it doesn't exist
-             f.write("dummy image content for testing, replace with actual image")
-        logger.info(f"Attempting to use dummy image: {sample_image_file} for test. Replace with a real JPG/PNG.")
-    except IOError:
-        logger.warning(f"Could not create dummy {sample_image_file}. Image test might fail if file doesn't exist.")
+    # Remove the incorrect text file creation - will create proper image below
 
 
     print("\n--- Test 2: Image Embedding ---")
     if_image_exists = False
     try:
-        # A more robust check or ensure you have a sample image
+        # Create a proper test image using PIL
         from PIL import Image as PILImage
         try:
-            img_pil = PILImage.new('RGB', (100, 100), color = 'blue')
-            img_pil.save(sample_image_file)
+            # Create a simple test image
+            img_pil = PILImage.new('RGB', (100, 100), color='blue')
+            img_pil.save(sample_image_file, 'JPEG')
             if_image_exists = True
-            logger.info(f"Created a dummy {sample_image_file} for testing.")
+            logger.info(f"Created a test image: {sample_image_file}")
         except Exception as e_pil:
-            logger.error(f"Could not create dummy image using Pillow: {e_pil}. Ensure Pillow is installed or provide a real image.")
+            logger.error(f"Could not create test image using Pillow: {e_pil}. Ensure Pillow is installed.")
 
     except ImportError:
-        logger.warning("Pillow not installed. Cannot create dummy image. Ensure sample_image.jpg exists.")
+        logger.warning("Pillow not installed. Cannot create test image. Skipping image test.")
 
 
     if if_image_exists:

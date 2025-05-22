@@ -95,14 +95,25 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environment files and secrets
 .env
+.env.local
+.env.production
+.env.staging
+.env.*
+!.env.example
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# API Keys and credentials
+*.key
+*.pem
+credentials.json
+service-account*.json
 
 # Spyder project settings
 .spyderproject
@@ -127,3 +138,50 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# AI Product Expert Bot specific files
+# Downloaded images and temporary files
+images/
+temp_images/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+sample_image.*
+
+# Vocabulary and embedding cache files
+vocab_embeddings.json
+*.vocab
+*.embeddings
+
+# Downloaded XML feeds and data
+*.xml
+feed_data/
+
+# Model cache and checkpoints
+models/
+checkpoints/
+.fastembed_cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+temp/
+logs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

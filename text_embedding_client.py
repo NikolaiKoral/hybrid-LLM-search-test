@@ -3,6 +3,7 @@ Text embedding client for the AI Product Expert Bot.
 """
 
 import logging
+import time
 from typing import List, Optional, Union, Dict, Any
 
 from google.cloud import aiplatform
@@ -53,7 +54,8 @@ def get_text_embedding_client():
 
 def get_text_embedding(
     text: Union[str, List[str]],
-    normalize: bool = True
+    normalize: bool = True,
+    max_retries: int = 3
 ) -> Optional[Union[List[float], List[List[float]]]]:
     """
     Generates text embeddings for the given text.
@@ -92,31 +94,48 @@ def get_text_embedding(
                 logger.warning("Invalid text list provided for embedding")
                 return None
         
-        # Get embeddings with error handling
+        # Get embeddings with error handling and retries
         result = []
         for i, t in enumerate(text_list):
-            try:
-                embedding = client.get_embeddings([t])
-                if not embedding or not embedding[0].values:
-                    logger.warning(f"No embedding generated for text {i}: {t[:50]}...")
-                    if single_input:
-                        return None
-                    result.append(None)
-                    continue
+            # Retry logic for each text
+            embedding_success = False
+            last_exception = None
+            
+            for retry in range(max_retries):
+                try:
+                    embedding = client.get_embeddings([t])
+                    if not embedding or not embedding[0].values:
+                        if retry == max_retries - 1:
+                            logger.warning(f"No embedding generated for text {i} after {max_retries} attempts: {t[:50]}...")
+                        continue
+                        
+                    values = embedding[0].values
                     
-                values = embedding[0].values
-                
-                # Normalize if requested with zero vector check
-                if normalize:
-                    norm = np.linalg.norm(values)
-                    if norm > 1e-8:  # Avoid division by very small numbers
-                        values = [v / norm for v in values]
-                    else:
-                        logger.warning(f"Zero or near-zero embedding vector at index {i}")
-                
-                result.append(values)
-            except Exception as e:
-                logger.error(f"Error generating embedding for text {i}: {e}")
+                    # Validate embedding dimensions
+                    if len(values) != config.TEXT_EMBEDDING_005_DIMENSION:
+                        logger.warning(f"Unexpected embedding dimension: {len(values)} (expected {config.TEXT_EMBEDDING_005_DIMENSION})")
+                    
+                    # Normalize if requested with zero vector check
+                    if normalize:
+                        norm = np.linalg.norm(values)
+                        if norm > 1e-8:  # Avoid division by very small numbers
+                            values = [v / norm for v in values]
+                        else:
+                            logger.warning(f"Zero or near-zero embedding vector at index {i}")
+                    
+                    result.append(values)
+                    embedding_success = True
+                    break
+                    
+                except Exception as e:
+                    last_exception = e
+                    if retry < max_retries - 1:
+                        logger.warning(f"Retry {retry + 1}/{max_retries} for text {i}: {e}")
+                        time.sleep(0.5 * (retry + 1))  # Exponential backoff
+                    continue
+            
+            if not embedding_success:
+                logger.error(f"Failed to generate embedding for text {i} after {max_retries} attempts: {last_exception}")
                 if single_input:
                     return None
                 result.append(None)

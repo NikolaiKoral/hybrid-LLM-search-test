@@ -150,52 +150,115 @@ def upsert_points(
     points_data: List[Dict[str, Any]], # Each dict: {'id': str, 'payload': dict, 'dense_vector': List[float], 'sparse_vector': {'indices': List[int], 'values': List[float]}}
     collection_name: str = config.QDRANT_COLLECTION_NAME,
     dense_vector_name: str = config.DEFAULT_DENSE_VECTOR_NAME,
-    sparse_vector_name: Optional[str] = config.SPARSE_VECTOR_NAME
+    sparse_vector_name: Optional[str] = config.SPARSE_VECTOR_NAME,
+    batch_size: int = 100
 ) -> bool:
     """
-    Inserts or updates points with named dense and (optional) sparse vectors.
+    Inserts or updates points with named dense and (optional) sparse vectors using batching.
     """
     client = get_qdrant_client()
-    qdrant_points: List[models.PointStruct] = []
+    
+    if not points_data:
+        logger.info("No points provided for upsert.")
+        return True
+    
+    # Process points in batches for better performance and memory management
+    total_points = len(points_data)
+    total_processed = 0
+    total_skipped = 0
+    
+    for batch_start in range(0, total_points, batch_size):
+        batch_end = min(batch_start + batch_size, total_points)
+        batch_data = points_data[batch_start:batch_end]
+        
+        logger.info(f"Processing batch {batch_start//batch_size + 1}/{(total_points-1)//batch_size + 1} ({len(batch_data)} points)")
+        
+        qdrant_points: List[models.PointStruct] = []
+        
+        for point_data in batch_data:
+            # Input validation
+            if not isinstance(point_data, dict) or 'id' not in point_data:
+                logger.warning(f"Invalid point data structure, skipping")
+                total_skipped += 1
+                continue
+                
+            vector_map: Dict[str, Union[List[float], models.SparseVector]] = {}
+            
+            # Process dense vector with validation
+            if 'dense_vector' in point_data and point_data['dense_vector'] is not None:
+                dense_vec = point_data['dense_vector']
+                if isinstance(dense_vec, list) and len(dense_vec) > 0:
+                    vector_map[dense_vector_name] = dense_vec
+                else:
+                    logger.warning(f"Point {point_data['id']} has invalid dense vector format")
+            
+            # Process sparse vector with validation
+            if sparse_vector_name and 'sparse_vector' in point_data and point_data['sparse_vector'] is not None:
+                sparse_data = point_data['sparse_vector']
+                if isinstance(sparse_data, dict) and "indices" in sparse_data and "values" in sparse_data:
+                    try:
+                        indices = sparse_data['indices']
+                        values = sparse_data['values']
+                        
+                        # Validate sparse vector data
+                        if isinstance(indices, list) and isinstance(values, list) and len(indices) == len(values):
+                            vector_map[sparse_vector_name] = models.SparseVector(
+                                indices=indices,
+                                values=values
+                            )
+                        else:
+                            logger.warning(f"Point {point_data['id']} has mismatched sparse vector dimensions")
+                    except Exception as e:
+                        logger.warning(f"Point {point_data['id']} sparse vector creation failed: {e}")
+                else:
+                    logger.warning(f"Point {point_data['id']} has invalid sparse_vector format")
+            
+            if not vector_map:
+                logger.warning(f"Point {point_data['id']} has no valid vectors to upsert. Skipping point.")
+                total_skipped += 1
+                continue
 
-    for point_data in points_data:
-        vector_map: Dict[str, Union[List[float], models.SparseVector]] = {}
-        
-        if 'dense_vector' in point_data and point_data['dense_vector'] is not None:
-            vector_map[dense_vector_name] = point_data['dense_vector']
-        
-        if sparse_vector_name and 'sparse_vector' in point_data and point_data['sparse_vector'] is not None:
-            sparse_data = point_data['sparse_vector']
-            if isinstance(sparse_data, dict) and "indices" in sparse_data and "values" in sparse_data:
-                vector_map[sparse_vector_name] = models.SparseVector(
-                    indices=sparse_data['indices'],
-                    values=sparse_data['values']
-                )
-            else:
-                logger.warning(f"Point {point_data['id']} has invalid sparse_vector format. Skipping sparse part.")
-        
-        if not vector_map:
-            logger.warning(f"Point {point_data['id']} has no valid vectors to upsert. Skipping point.")
+            # Validate payload
+            payload = point_data.get('payload', {})
+            if not isinstance(payload, dict):
+                logger.warning(f"Point {point_data['id']} has invalid payload format, using empty payload")
+                payload = {}
+
+            qdrant_points.append(models.PointStruct(
+                id=point_data['id'],
+                payload=payload,
+                vector=vector_map
+            ))
+            
+        if not qdrant_points:
+            logger.info(f"No valid points in batch {batch_start//batch_size + 1}, skipping")
             continue
 
-        qdrant_points.append(models.PointStruct(
-            id=point_data['id'],
-            payload=point_data.get('payload', {}),
-            vector=vector_map
-        ))
+        # Upsert batch with retry logic
+        batch_success = False
+        max_retries = 3
         
-    if not qdrant_points:
-        logger.info("No points to upsert after processing input.")
-        return True
-
-    try:
-        logger.info(f"Upserting {len(qdrant_points)} points to collection '{collection_name}'...")
-        client.upsert(collection_name=collection_name, points=qdrant_points, wait=True)
-        logger.info(f"Successfully upserted {len(qdrant_points)} points.")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to upsert points: {e}", exc_info=True)
-        return False
+        for retry in range(max_retries):
+            try:
+                client.upsert(collection_name=collection_name, points=qdrant_points, wait=True)
+                batch_success = True
+                total_processed += len(qdrant_points)
+                logger.info(f"Successfully upserted batch {batch_start//batch_size + 1} ({len(qdrant_points)} points)")
+                break
+            except Exception as e:
+                logger.warning(f"Batch upsert attempt {retry + 1} failed: {e}")
+                if retry < max_retries - 1:
+                    time.sleep(1 * (retry + 1))  # Exponential backoff
+                else:
+                    logger.error(f"Failed to upsert batch {batch_start//batch_size + 1} after {max_retries} attempts")
+                    return False
+        
+        # Brief pause between batches to avoid overwhelming the server
+        if batch_end < total_points:
+            time.sleep(0.1)
+    
+    logger.info(f"Upsert completed: {total_processed} points processed, {total_skipped} skipped")
+    return True
 
 def search_points(
     dense_query_vector: Optional[List[float]] = None,
